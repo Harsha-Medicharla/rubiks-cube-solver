@@ -12,6 +12,7 @@ std::vector<std::string> OpenMPSolver::solve(RubiksCube& cube, int maxDepth) {
     
     if (cube.isSolved()) {
         solveTime_ = 0.0;
+        std::cout << "Cube already solved!" << std::endl;
         return {};
     }
     
@@ -20,44 +21,66 @@ std::vector<std::string> OpenMPSolver::solve(RubiksCube& cube, int maxDepth) {
     nodesExplored_ = 0;
     solutionFound_ = false;
     
-    std::cout << "Starting OpenMP DFS search (threads: " << numThreads_ 
-              << ", max depth: " << maxDepth << ")..." << std::endl;
+    std::cout << "=== OpenMP DFS Search ===" << std::endl;
+    std::cout << "Threads: " << numThreads_ << std::endl;
+    std::cout << "Max depth: " << maxDepth << std::endl;
     
-    auto moves = RubiksCube::getBasicMoves();
-    
-    // Parallel search at first level
-    #pragma omp parallel for schedule(dynamic)
-    for (size_t i = 0; i < moves.size(); ++i) {
-        if (solutionFound_) continue;
+    // Iterative deepening for better results
+    for (int depth = 1; depth <= maxDepth && !solutionFound_; depth++) {
+        std::cout << "\nTrying depth " << depth << "..." << std::endl;
+        maxDepth_ = depth;
+        nodesExplored_ = 0;
         
-        RubiksCube localCube = cube;
-        localCube.applyMove(moves[i]);
+        auto moves = RubiksCube::getBasicMoves();
         
-        std::vector<std::string> localPath = {moves[i]};
-        
-        if (searchParallel(localCube, moves[i], 1)) {
-            #pragma omp critical
-            {
-                if (!solutionFound_) {
-                    solution_ = localPath;
-                    solutionFound_ = true;
+        // Parallel search at first level
+        #pragma omp parallel for schedule(dynamic)
+        for (size_t i = 0; i < moves.size(); ++i) {
+            if (solutionFound_) continue;
+            
+            RubiksCube localCube = cube;
+            localCube.applyMove(moves[i]);
+            
+            std::vector<std::string> localPath = {moves[i]};
+            
+            if (search(localCube, 1, moves[i], localPath)) {
+                #pragma omp critical
+                {
+                    if (!solutionFound_) {
+                        solution_ = localPath;
+                        solutionFound_ = true;
+                        std::cout << "  Thread found solution at depth " << depth << "!" << std::endl;
+                    }
                 }
             }
         }
+        
+        std::cout << "  Depth " << depth << ": " 
+                  << nodesExplored_ << " nodes explored"
+                  << (solutionFound_ ? " - SOLUTION FOUND!" : " - no solution") << std::endl;
     }
     
     auto endTime = std::chrono::high_resolution_clock::now();
     solveTime_ = std::chrono::duration<double>(endTime - startTime).count();
     
+    std::cout << "\n=== Search Complete ===" << std::endl;
     if (solutionFound_) {
-        std::cout << "Solution found! Moves: " << solution_.size() 
-                  << ", Nodes: " << nodesExplored_ 
-                  << ", Time: " << solveTime_ << "s" 
-                  << ", Threads: " << numThreads_ << std::endl;
+        std::cout << "✓ Solution found!" << std::endl;
+        std::cout << "  Moves: " << solution_.size() << std::endl;
+        std::cout << "  Total nodes: " << nodesExplored_ << std::endl;
+        std::cout << "  Time: " << solveTime_ << "s" << std::endl;
+        std::cout << "  Threads: " << numThreads_ << std::endl;
+        std::cout << "  Solution: ";
+        for (const auto& move : solution_) {
+            std::cout << move << " ";
+        }
+        std::cout << std::endl;
         return solution_;
     }
     
-    std::cout << "No solution found within depth " << maxDepth << std::endl;
+    std::cout << "✗ No solution found within depth " << maxDepth << std::endl;
+    std::cout << "  Total nodes: " << nodesExplored_ << std::endl;
+    std::cout << "  Time: " << solveTime_ << "s" << std::endl;
     return {};
 }
 
@@ -70,6 +93,14 @@ bool OpenMPSolver::search(RubiksCube& cube, int depth, const std::string& lastMo
                           std::vector<std::string>& path) {
     #pragma omp atomic
     nodesExplored_++;
+    
+    // Progress reporting (thread-safe)
+    if (nodesExplored_ % 50000 == 0) {
+        #pragma omp critical
+        {
+            std::cout << "    Progress: " << nodesExplored_ << " nodes" << std::endl;
+        }
+    }
     
     if (solutionFound_) return false;
     
@@ -125,4 +156,3 @@ bool OpenMPSolver::isRedundantMove(const std::string& lastMove, const std::strin
     
     return false;
 }
-

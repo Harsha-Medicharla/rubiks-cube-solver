@@ -1,4 +1,4 @@
-// Updated src/http_server.cpp
+// Updated src/http_server.cpp with MPI initialization checks
 #include "http_server.hpp"
 #include "sequential_solver.hpp"
 
@@ -47,14 +47,18 @@ std::vector<std::string> HTTPServer::getAvailableSolvers() const {
 #endif
     
 #ifdef HAVE_MPI
-    solvers.push_back("mpi");
-    solvers.push_back("hybrid");
+    if (MPISolver::IsInitialized()) {
+        solvers.push_back("mpi");
+        solvers.push_back("hybrid");
+    }
 #endif
     
     return solvers;
 }
 
 std::unique_ptr<Solver> HTTPServer::createSolver(const std::string& type) {
+    std::cout << "Creating solver: " << type << std::endl;
+    
     if (type == "sequential") {
         return std::make_unique<SequentialSolver>();
     }
@@ -65,13 +69,24 @@ std::unique_ptr<Solver> HTTPServer::createSolver(const std::string& type) {
 #endif
 #ifdef HAVE_MPI
     else if (type == "mpi") {
-            return std::make_unique<MPISolver>();
+        if (!MPISolver::IsInitialized()) {
+            std::cerr << "ERROR: MPI not initialized!" << std::endl;
+            std::cerr << "Start the server with: mpirun -np 4 ./rubiks_solver" << std::endl;
+            throw std::runtime_error("MPI not initialized. Cannot create MPISolver.");
+        }
+        return std::make_unique<MPISolver>();
     } else if (type == "hybrid") {
-            return std::make_unique<HybridSolver>(2); // Default 2 threads per process
+        if (!MPISolver::IsInitialized()) {
+            std::cerr << "ERROR: MPI not initialized!" << std::endl;
+            std::cerr << "Start the server with: mpirun -np 4 ./rubiks_solver" << std::endl;
+            throw std::runtime_error("MPI not initialized. Cannot create HybridSolver.");
+        }
+        return std::make_unique<HybridSolver>(2); // Default 2 threads per process
     }
 #endif
     
     // Default fallback
+    std::cerr << "Unknown solver type: " << type << ", falling back to sequential" << std::endl;
     return std::make_unique<SequentialSolver>();
 }
 
@@ -101,8 +116,10 @@ void HTTPServer::start() {
     }
     
     running_ = true;
+    std::cout << "\n========================================" << std::endl;
     std::cout << "Server started on port " << port_ << std::endl;
     std::cout << "Current solver: " << solver_->getName() << std::endl;
+    std::cout << "========================================" << std::endl;
     std::cout << "\nAPI Endpoints:" << std::endl;
     std::cout << "  GET  /status         - Server status" << std::endl;
     std::cout << "  GET  /cube           - Current cube state" << std::endl;
@@ -113,6 +130,7 @@ void HTTPServer::start() {
     std::cout << "  POST /cube/move      - Apply a move" << std::endl;
     std::cout << "  POST /cube/solve     - Solve the cube" << std::endl;
     std::cout << "  POST /cube/state     - Set cube state" << std::endl;
+    std::cout << "========================================\n" << std::endl;
     
     while (running_) {
         sockaddr_in clientAddr;
@@ -146,6 +164,9 @@ std::string HTTPServer::handleRequest(const std::string& request) {
     std::istringstream stream(request);
     std::string method, path, version;
     stream >> method >> path >> version;
+    
+    // Log request
+    std::cout << method << " " << path << std::endl;
     
     if (method == "OPTIONS") {
         return handleOPTIONS();
@@ -230,15 +251,21 @@ std::string HTTPServer::selectSolver(const std::string& body) {
     
     if (!isAvailable) {
         std::stringstream ss;
-        ss << "{\"error\":\"Solver '" << solverType << "' not available\"}";
+        ss << "{\"error\":\"Solver '" << solverType << "' not available or MPI not initialized\"}";
         return createResponse(400, ss.str());
     }
     
-    setSolver(solverType);
-    
-    std::stringstream ss;
-    ss << "{\"success\":true,\"solver\":\"" << solver_->getName() << "\"}";
-    return createResponse(200, ss.str());
+    try {
+        setSolver(solverType);
+        
+        std::stringstream ss;
+        ss << "{\"success\":true,\"solver\":\"" << solver_->getName() << "\"}";
+        return createResponse(200, ss.str());
+    } catch (const std::exception& e) {
+        std::stringstream ss;
+        ss << "{\"error\":\"" << e.what() << "\"}";
+        return createResponse(500, ss.str());
+    }
 }
 
 std::string HTTPServer::getCubeState() {
@@ -246,6 +273,7 @@ std::string HTTPServer::getCubeState() {
 }
 
 std::string HTTPServer::resetCube() {
+    std::cout << "Resetting cube to solved state" << std::endl;
     currentCube_.reset();
     return createResponse(200, currentCube_.toJSON());
 }
@@ -260,6 +288,7 @@ std::string HTTPServer::scrambleCube(const std::string& body) {
         } catch (...) {}
     }
     
+    std::cout << "Scrambling cube with " << moves << " moves" << std::endl;
     currentCube_.scramble(moves);
     return createResponse(200, currentCube_.toJSON());
 }
@@ -272,6 +301,7 @@ std::string HTTPServer::applyMove(const std::string& body) {
     }
     
     try {
+        std::cout << "Applying move: " << move << std::endl;
         currentCube_.applyMove(move);
         return createResponse(200, currentCube_.toJSON());
     } catch (const std::exception& e) {
@@ -291,7 +321,12 @@ std::string HTTPServer::solveCube(const std::string& body) {
         } catch (...) {}
     }
     
+    std::cout << "\n=== Starting solve with " << solver_->getName() << " ===" << std::endl;
+    std::cout << "Max depth: " << maxDepth << std::endl;
+    
     auto solution = solver_->solve(currentCube_, maxDepth);
+    
+    std::cout << "=== Solve complete ===" << std::endl;
     
     std::stringstream ss;
     ss << "{\"solution\":[";
@@ -367,7 +402,8 @@ std::string HTTPServer::extractJSONValue(const std::string& json, const std::str
     return "";
 }
 
-std::map<std::string, std::string> HTTPServer::parseJSON(const std::string& json) {
+std::map<std::string, std::string> HTTPServer::parseJSON(const std::string& /* json */) {
     std::map<std::string, std::string> result;
+    // Not implemented - using extractJSONValue instead
     return result;
 }

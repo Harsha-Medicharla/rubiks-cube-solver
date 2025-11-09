@@ -1,10 +1,15 @@
 #include "http_server.hpp"
 #include "rubiks_cube.hpp"
 #include "sequential_solver.hpp"
+#ifdef HAVE_MPI
+#include "mpi_solver.hpp"
+#include "hybrid_solver.hpp"
+#include <mpi.h>
+#endif
 #include <iostream>
 #include <csignal>
 #include <memory>
-#include <mpi.h>
+#include <unistd.h>  // for sleep()
 
 std::unique_ptr<HTTPServer> server;
 
@@ -14,38 +19,59 @@ void signalHandler(int signal) {
         if (server) {
             server->stop();
         }
-        MPI_Finalize(); // Clean MPI
+#ifdef HAVE_MPI
+        if (MPISolver::IsInitialized()) {
+            MPISolver::Finalize();
+        }
+#endif
         exit(0);
     }
 }
 
 int main(int argc, char* argv[]) {
-    MPI_Init(&argc, &argv);
-
-    int rank;
+    int rank = 0;
+    
+    // Initialize MPI once for all processes
+#ifdef HAVE_MPI
+    MPISolver::Initialize(&argc, &argv);
+    // Note: HybridSolver uses the same MPI initialization
+    
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // Only rank 0 should respond to shutdown signals
+    
     if (rank == 0) {
-        signal(SIGINT, signalHandler);
-        signal(SIGTERM, signalHandler);
+        std::cout << "MPI initialized successfully" << std::endl;
     }
+#endif
+
+    signal(SIGINT, signalHandler);
+    signal(SIGTERM, signalHandler);
 
     int port = 8080;
-    if (argc > 1 && rank == 0) { // Only rank 0 needs CLI args
+    if (argc > 1) {
         try {
             port = std::stoi(argv[1]);
         } catch (...) {
-            std::cerr << "Invalid port number" << std::endl;
-            MPI_Finalize();
+            if (rank == 0) {
+                std::cerr << "Invalid port number" << std::endl;
+            }
+#ifdef HAVE_MPI
+            if (MPISolver::IsInitialized()) {
+                MPISolver::Finalize();
+            }
+#endif
             return 1;
         }
     }
 
-    // Rank 0 starts HTTP server
+    // Only rank 0 runs HTTP server
     if (rank == 0) {
         std::cout << "==================================" << std::endl;
-        std::cout << "Rubik's Cube Solver Backend (MPI mode)" << std::endl;
+        std::cout << "Rubik's Cube Solver Backend" << std::endl;
+#ifdef HAVE_MPI
+        int size;
+        MPI_Comm_size(MPI_COMM_WORLD, &size);
+        std::cout << "(MPI mode: " << size << " processes)" << std::endl;
+#endif
         std::cout << "==================================\n" << std::endl;
 
         std::cout << "Testing cube implementation..." << std::endl;
@@ -56,17 +82,24 @@ int main(int argc, char* argv[]) {
         std::cout << "\nStarting HTTP server...\n" << std::endl;
 
         server = std::make_unique<HTTPServer>(port);
-        server->start(); // Blocking loop – Rank 0 stays here
+        server->start(); // Blocking
     }
+#ifdef HAVE_MPI
     else {
-        // Rank > 0 = Worker ranks (idle until solver uses them)
-        // Prevent exit
+        // Worker ranks: wait for work
+        std::cout << "Worker rank " << rank << " ready and waiting..." << std::endl;
+        // In a real implementation, workers would listen for MPI messages
+        // For now, just keep them alive
         while (true) {
-            // In future: MPI_Recv task packets here for distributed solving
-            MPI_Barrier(MPI_COMM_WORLD);
+            sleep(1);
         }
     }
+#endif
 
-    MPI_Finalize();
+#ifdef HAVE_MPI
+    if (MPISolver::IsInitialized()) {
+        MPISolver::Finalize();
+    }
+#endif
     return 0;
 }
