@@ -2,7 +2,7 @@
 #include "solver.hpp"
 #include "rubiks_cube.hpp"
 #include <mpi.h>
-#include <string>
+#include <chrono>
 
 class MPISolver : public Solver {
 public:
@@ -10,9 +10,8 @@ public:
     ~MPISolver();
     
     std::vector<std::string> solve(RubiksCube& cube, int maxDepth = 20) override;
-    std::string getName() const override { return "MPI"; }
+    std::string getName() const override { return "MPI (IDA*)"; }
     
-    // Must be called before using solver
     static void Initialize(int* argc, char*** argv);
     static void Finalize();
     static bool IsInitialized() { return initialized_; }
@@ -28,7 +27,9 @@ private:
     std::vector<std::string> solution_;
     int maxDepth_;
     
-    bool search(RubiksCube& cube, int depth, const std::string& lastMove,
-                std::vector<std::string>& path);
+    int heuristic(const RubiksCube& cube) const;
+    int idaSearch(RubiksCube& cube, int g, int threshold, const std::string& lastMove,
+                  std::vector<std::string>& path, double timeLimit,
+                  std::chrono::high_resolution_clock::time_point startTime);
     bool isRedundantMove(const std::string& lastMove, const std::string& nextMove) const;
 };

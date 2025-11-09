@@ -1,3 +1,4 @@
+// src/main.cpp - Correct MPI lifecycle (Initialize once, Finalize once)
 #include "http_server.hpp"
 #include "rubiks_cube.hpp"
 #include "sequential_solver.hpp"
@@ -9,7 +10,8 @@
 #include <iostream>
 #include <csignal>
 #include <memory>
-#include <unistd.h>  // for sleep()
+#include <unistd.h>
+#include <iomanip>
 
 std::unique_ptr<HTTPServer> server;
 
@@ -19,25 +21,20 @@ void signalHandler(int signal) {
         if (server) {
             server->stop();
         }
-#ifdef HAVE_MPI
-        if (MPISolver::IsInitialized()) {
-            MPISolver::Finalize();
-        }
-#endif
+        // DO NOT finalize MPI here. Let main finalize when exiting.
         exit(0);
     }
 }
 
 int main(int argc, char* argv[]) {
     int rank = 0;
-    
-    // Initialize MPI once for all processes
+    int size = 1;
+
 #ifdef HAVE_MPI
     MPISolver::Initialize(&argc, &argv);
-    // Note: HybridSolver uses the same MPI initialization
-    
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
     if (rank == 0) {
         std::cout << "MPI initialized successfully" << std::endl;
     }
@@ -54,12 +51,7 @@ int main(int argc, char* argv[]) {
             if (rank == 0) {
                 std::cerr << "Invalid port number" << std::endl;
             }
-#ifdef HAVE_MPI
-            if (MPISolver::IsInitialized()) {
-                MPISolver::Finalize();
-            }
-#endif
-            return 1;
+            return 1; // Do NOT finalize here
         }
     }
 
@@ -68,38 +60,57 @@ int main(int argc, char* argv[]) {
         std::cout << "==================================" << std::endl;
         std::cout << "Rubik's Cube Solver Backend" << std::endl;
 #ifdef HAVE_MPI
-        int size;
-        MPI_Comm_size(MPI_COMM_WORLD, &size);
         std::cout << "(MPI mode: " << size << " processes)" << std::endl;
 #endif
         std::cout << "==================================\n" << std::endl;
 
-        std::cout << "Testing cube implementation..." << std::endl;
         RubiksCube testCube;
         std::cout << "Created solved cube: " << (testCube.isSolved() ? "✓" : "✗") << std::endl;
         testCube.scramble(5);
         std::cout << "Scrambled cube: " << (!testCube.isSolved() ? "✓" : "✗") << std::endl;
-        std::cout << "\nStarting HTTP server...\n" << std::endl;
 
         server = std::make_unique<HTTPServer>(port);
-        server->start(); // Blocking
+        server->start(); // blocking
     }
 #ifdef HAVE_MPI
     else {
-        // Worker ranks: wait for work
-        std::cout << "Worker rank " << rank << " ready and waiting..." << std::endl;
-        // In a real implementation, workers would listen for MPI messages
-        // For now, just keep them alive
+        std::cout << "Worker rank " << rank << " waiting for solve commands..." << std::endl;
+
         while (true) {
-            sleep(1);
+            int solveCommand = 0;
+            MPI_Bcast(&solveCommand, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+            if (solveCommand == 0) {
+                usleep(100000);
+                continue;
+            }
+
+            int maxDepth;
+            MPI_Bcast(&maxDepth, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+            int stateLength;
+            MPI_Bcast(&stateLength, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+            char* buffer = new char[stateLength + 1];
+            MPI_Bcast(buffer, stateLength + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+            RubiksCube cube{ std::string(buffer) };
+            delete[] buffer;
+
+            if (solveCommand == 1) {
+                MPISolver solver;
+                solver.solve(cube, maxDepth);
+            } 
+            if (solveCommand == 2) {
+                HybridSolver solver(2);
+                solver.solve(cube, maxDepth);
+                continue;
+            }
         }
     }
 #endif
 
 #ifdef HAVE_MPI
-    if (MPISolver::IsInitialized()) {
-        MPISolver::Finalize();
-    }
+    MPISolver::Finalize(); 
 #endif
     return 0;
 }

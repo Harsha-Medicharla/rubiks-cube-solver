@@ -1,4 +1,3 @@
-// Updated src/http_server.cpp with MPI initialization checks
 #include "http_server.hpp"
 #include "sequential_solver.hpp"
 
@@ -11,6 +10,7 @@
 #include "hybrid_solver.hpp"
 #endif
 
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -321,24 +321,216 @@ std::string HTTPServer::solveCube(const std::string& body) {
         } catch (...) {}
     }
     
-    std::cout << "\n=== Starting solve with " << solver_->getName() << " ===" << std::endl;
-    std::cout << "Max depth: " << maxDepth << std::endl;
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "SOLVING WITH ALL 4 ALGORITHMS" << std::endl;
+    std::cout << "========================================\n" << std::endl;
     
-    auto solution = solver_->solve(currentCube_, maxDepth);
+    // Store cube state for each algorithm
+    std::string cubeState = currentCube_.toString();
     
-    std::cout << "=== Solve complete ===" << std::endl;
+    struct AlgorithmResult {
+        std::string name;
+        std::vector<std::string> solution;
+        double time;
+        int nodes;
+        bool success;
+    };
     
-    std::stringstream ss;
-    ss << "{\"solution\":[";
-    for (size_t i = 0; i < solution.size(); ++i) {
-        ss << "\"" << solution[i] << "\"";
-        if (i < solution.size() - 1) ss << ",";
+    std::vector<AlgorithmResult> results;
+    
+    // 1. Sequential IDA*
+    {
+        std::cout << "\n[1/4] Running Sequential IDA*..." << std::endl;
+        RubiksCube cube(cubeState);
+        SequentialSolver solver;
+        auto solution = solver.solve(cube, maxDepth);
+        
+        AlgorithmResult result;
+        result.name = solver.getName();
+        result.solution = solution;
+        result.time = solver.getSolveTime();
+        result.nodes = solver.getNodesExplored();
+        result.success = !solution.empty();
+        results.push_back(result);
     }
-    ss << "],\"moves\":" << solution.size();
-    ss << ",\"nodes\":" << solver_->getNodesExplored();
-    ss << ",\"time\":" << solver_->getSolveTime();
-    ss << ",\"solver\":\"" << solver_->getName() << "\"";
-    ss << ",\"cube\":" << currentCube_.toJSON() << "}";
+    
+    // 2. OpenMP IDA*
+#ifdef HAVE_OPENMP
+    {
+        std::cout << "\n[2/4] Running OpenMP IDA*..." << std::endl;
+        RubiksCube cube(cubeState);
+        OpenMPSolver solver(4);
+        auto solution = solver.solve(cube, maxDepth);
+        
+        AlgorithmResult result;
+        result.name = solver.getName();
+        result.solution = solution;
+        result.time = solver.getSolveTime();
+        result.nodes = solver.getNodesExplored();
+        result.success = !solution.empty();
+        results.push_back(result);
+    }
+#endif
+    
+    // 3. MPI IDA* - Special handling to coordinate all ranks
+#ifdef HAVE_MPI
+    if (MPISolver::IsInitialized()) {
+        std::cout << "\n[3/4] Running MPI IDA*..." << std::endl;
+        // std::cout << "[DEBUG] Broadcasting cube state and solve command to all MPI ranks..." << std::endl;
+        
+        // Get my rank
+        int rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        
+        // Broadcast solve command (1 = solve with MPI, 0 = skip)
+        int solveCommand = 1;
+        MPI_Bcast(&solveCommand, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        // std::cout << "[DEBUG] Rank 0: Broadcasted solve command" << std::endl;
+        
+        // Broadcast maxDepth
+        MPI_Bcast(&maxDepth, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        // std::cout << "[DEBUG] Rank 0: Broadcasted maxDepth=" << maxDepth << std::endl;
+        
+        // Broadcast cube state length
+        int stateLength = cubeState.length();
+        MPI_Bcast(&stateLength, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        // std::cout << "[DEBUG] Rank 0: Broadcasted state length=" << stateLength << std::endl;
+        
+        // Broadcast cube state
+        char* stateBuffer = new char[stateLength + 1];
+        strcpy(stateBuffer, cubeState.c_str());
+        MPI_Bcast(stateBuffer, stateLength + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+        // std::cout << "[DEBUG] Rank 0: Broadcasted cube state" << std::endl;
+        
+        // Now all ranks have the cube state, create solver and solve
+        RubiksCube cube(cubeState);
+        MPISolver solver;
+        
+       //  std::cout << "[DEBUG] Rank 0: Calling solver.solve()..." << std::endl;
+        auto solution = solver.solve(cube, maxDepth);
+       //  std::cout << "[DEBUG] Rank 0: solver.solve() returned" << std::endl;
+        
+        delete[] stateBuffer;
+        
+        // Only rank 0 records results
+        if (rank == 0) {
+            AlgorithmResult result;
+            result.name = solver.getName();
+            result.solution = solution;
+            result.time = solver.getSolveTime();
+            result.nodes = solver.getNodesExplored();
+            result.success = !solution.empty();
+            results.push_back(result);
+        }
+    }
+#endif
+    
+    // 4. Hybrid MPI+OpenMP IDA* - Special handling
+#ifdef HAVE_MPI
+    if (MPISolver::IsInitialized()) {
+        std::cout << "\n[4/4] Running Hybrid IDA*..." << std::endl;
+        // std::cout << "[DEBUG] Broadcasting cube state and solve command to all MPI ranks..." << std::endl;
+        
+        int rank;
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        
+        // Broadcast solve command (2 = solve with Hybrid)
+        int solveCommand = 2;
+        MPI_Bcast(&solveCommand, 1, MPI_INT, 0, MPI_COMM_WORLD);
+       //  std::cout << "[DEBUG] Rank 0: Broadcasted solve command (Hybrid)" << std::endl;
+        
+        // Broadcast maxDepth
+        MPI_Bcast(&maxDepth, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        // Broadcast cube state
+        int stateLength = cubeState.length();
+        MPI_Bcast(&stateLength, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        
+        char* stateBuffer = new char[stateLength + 1];
+        strcpy(stateBuffer, cubeState.c_str());
+        MPI_Bcast(stateBuffer, stateLength + 1, MPI_CHAR, 0, MPI_COMM_WORLD);
+       //  std::cout << "[DEBUG] Rank 0: Broadcasted cube state (Hybrid)" << std::endl;
+        
+        RubiksCube cube(cubeState);
+        HybridSolver solver(2);
+        
+      //   std::cout << "[DEBUG] Rank 0: Calling solver.solve() (Hybrid)..." << std::endl;
+        auto solution = solver.solve(cube, maxDepth);
+      //   std::cout << "[DEBUG] Rank 0: solver.solve() returned (Hybrid)" << std::endl;
+        
+        delete[] stateBuffer;
+        
+        if (rank == 0) {
+            AlgorithmResult result;
+            result.name = solver.getName();
+            result.solution = solution;
+            result.time = solver.getSolveTime();
+            result.nodes = solver.getNodesExplored();
+            result.success = !solution.empty();
+            results.push_back(result);
+        }
+    }
+#endif
+    
+    // Print comparison table (only on rank 0)
+    std::cout << "\n========================================" << std::endl;
+    std::cout << "RESULTS COMPARISON" << std::endl;
+    std::cout << "========================================" << std::endl;
+    
+    std::cout << std::left << std::setw(25) << "Algorithm"
+              << std::setw(10) << "Time(s)"
+              << std::setw(12) << "Moves"
+              << std::setw(12) << "Nodes"
+              << std::setw(10) << "Speedup" << std::endl;
+    std::cout << std::string(70, '-') << std::endl;
+    
+    double baseTime = results[0].time;
+    
+    for (const auto& result : results) {
+        if (result.success) {
+            double speedup = baseTime / result.time;
+            std::cout << std::left << std::setw(25) << result.name
+                      << std::setw(10) << std::fixed << std::setprecision(4) << result.time
+                      << std::setw(12) << result.solution.size()
+                      << std::setw(12) << result.nodes
+                      << std::setw(10) << std::fixed << std::setprecision(2) << speedup << "x"
+                      << std::endl;
+        } else {
+            std::cout << std::left << std::setw(25) << result.name
+                      << "TIMEOUT/FAILED" << std::endl;
+        }
+    }
+    std::cout << "========================================\n" << std::endl;
+    
+    // Build JSON response
+    std::stringstream ss;
+    ss << "{\"results\":[";
+    
+    for (size_t i = 0; i < results.size(); ++i) {
+        const auto& result = results[i];
+        
+        ss << "{\"name\":\"" << result.name << "\"";
+        ss << ",\"success\":" << (result.success ? "true" : "false");
+        
+        if (result.success) {
+            ss << ",\"solution\":[";
+            for (size_t j = 0; j < result.solution.size(); ++j) {
+                ss << "\"" << result.solution[j] << "\"";
+                if (j < result.solution.size() - 1) ss << ",";
+            }
+            ss << "],\"moves\":" << result.solution.size();
+            ss << ",\"time\":" << std::fixed << std::setprecision(6) << result.time;
+            ss << ",\"nodes\":" << result.nodes;
+            ss << ",\"speedup\":" << std::fixed << std::setprecision(2) << (baseTime / result.time);
+        } else {
+            ss << ",\"solution\":[],\"moves\":0,\"time\":0,\"nodes\":0,\"speedup\":0";
+        }
+        
+        ss << "}";
+        if (i < results.size() - 1) ss << ",";
+    }
+    
+    ss << "],\"cube\":" << currentCube_.toJSON() << "}";
     
     return createResponse(200, ss.str());
 }

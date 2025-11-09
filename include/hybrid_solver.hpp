@@ -3,6 +3,7 @@
 #include "rubiks_cube.hpp"
 #include <mpi.h>
 #include <omp.h>
+#include <chrono>
 
 class HybridSolver : public Solver {
 public:
@@ -10,7 +11,7 @@ public:
     ~HybridSolver();
     
     std::vector<std::string> solve(RubiksCube& cube, int maxDepth = 20) override;
-    std::string getName() const override { return "Hybrid (MPI+OpenMP)"; }
+    std::string getName() const override { return "Hybrid (MPI+OpenMP IDA*)"; }
     
     static void Initialize(int* argc, char*** argv);
     static void Finalize();
@@ -30,7 +31,9 @@ private:
     int maxDepth_;
     bool solutionFound_;
     
-    bool search(RubiksCube& cube, int depth, const std::string& lastMove,
-                std::vector<std::string>& path);
+    int heuristic(const RubiksCube& cube) const;
+    int idaSearchHybrid(RubiksCube& cube, int g, int threshold,
+                       const std::string& lastMove, std::vector<std::string>& path,
+                       double timeLimit, std::chrono::high_resolution_clock::time_point startTime);
     bool isRedundantMove(const std::string& lastMove, const std::string& nextMove) const;
 };

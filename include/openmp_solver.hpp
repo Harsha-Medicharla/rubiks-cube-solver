@@ -2,12 +2,13 @@
 #include "solver.hpp"
 #include "rubiks_cube.hpp"
 #include <omp.h>
+#include <chrono>
 
 class OpenMPSolver : public Solver {
 public:
     OpenMPSolver(int numThreads = 4);
     std::vector<std::string> solve(RubiksCube& cube, int maxDepth = 20) override;
-    std::string getName() const override { return "OpenMP"; }
+    std::string getName() const override { return "OpenMP (IDA*)"; }
     
     int getNumThreads() const { return numThreads_; }
     
@@ -17,8 +18,9 @@ private:
     int maxDepth_;
     bool solutionFound_;
     
-    bool searchParallel(RubiksCube& cube, const std::string& firstMove, int depth);
-    bool search(RubiksCube& cube, int depth, const std::string& lastMove, 
-                std::vector<std::string>& path);
+    int heuristic(const RubiksCube& cube) const;
+    int idaSearchParallel(RubiksCube& cube, int g, int threshold,
+                         const std::string& lastMove, std::vector<std::string>& path,
+                         double timeLimit, std::chrono::high_resolution_clock::time_point startTime);
     bool isRedundantMove(const std::string& lastMove, const std::string& nextMove) const;
 };
