@@ -1,5 +1,6 @@
+// Updated rubiks-frontend/src/App.js
 import React, { useState, useEffect } from 'react';
-import { Shuffle, RotateCw, Play, Zap } from 'lucide-react';
+import { Shuffle, RotateCw, Play, Zap, Clock, Cpu } from 'lucide-react';
 import { cubeAPI } from './api';
 
 const App = () => {
@@ -10,9 +11,10 @@ const App = () => {
   const [serverStatus, setServerStatus] = useState('checking...');
   const [stats, setStats] = useState(null);
   const [scrambleMoves, setScrambleMoves] = useState(7);
+  const [availableSolvers, setAvailableSolvers] = useState([]);
+  const [currentSolver, setCurrentSolver] = useState('sequential');
+  const [solverHistory, setSolverHistory] = useState([]);
 
-
-  // Color mapping from backend to display
   const COLOR_MAP = {
     'W': 'bg-white border-gray-300',
     'Y': 'bg-yellow-400',
@@ -31,10 +33,17 @@ const App = () => {
     'R': 'Right (Red)'
   };
 
-  // Check backend connection on mount
+  const SOLVER_DESCRIPTIONS = {
+    'sequential': 'Single-threaded brute-force DFS',
+    'openmp': 'Parallel DFS with OpenMP',
+    'mpi': 'Distributed DFS with MPI',
+    'hybrid': 'MPI + OpenMP combined'
+  };
+
   useEffect(() => {
     checkBackend();
     loadCube();
+    loadSolvers();
   }, []);
 
   const checkBackend = async () => {
@@ -59,72 +68,118 @@ const App = () => {
     }
   };
 
+  const loadSolvers = async () => {
+    try {
+      const response = await fetch('http://localhost:8080/solvers');
+      const data = await response.json();
+      setAvailableSolvers(data.solvers);
+      setCurrentSolver(data.current);
+    } catch (err) {
+      console.error('Failed to load solvers:', err);
+      setAvailableSolvers(['sequential']);
+    }
+  };
+
+  const handleSolverChange = async (solver) => {
+    try {
+      const response = await fetch('http://localhost:8080/solver/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ solver })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        setCurrentSolver(solver);
+        console.log('Switched to:', data.solver);
+      }
+    } catch (err) {
+      console.error('Failed to switch solver:', err);
+    }
+  };
+
   const handleScramble = async () => {
-  setIsScrambling(true);
-  setSolution([]);
-  setStats(null);
-  try {
-    const data = await cubeAPI.scramble(scrambleMoves); // Use slider value
-    setCubeState(data);
-  } catch (err) {
-    console.error('Scramble failed:', err);
-    alert('Backend not responding. Make sure the C++ server is running!');
-  } finally {
-    setIsScrambling(false);
-  }
-};
+    setIsScrambling(true);
+    setSolution([]);
+    setStats(null);
+    try {
+      const data = await cubeAPI.scramble(scrambleMoves);
+      setCubeState(data);
+    } catch (err) {
+      console.error('Scramble failed:', err);
+      alert('Backend not responding. Make sure the C++ server is running!');
+    } finally {
+      setIsScrambling(false);
+    }
+  };
 
   const handleSolve = async () => {
-  setIsSolving(true);
-  setSolution([]);
-  setStats(null);
-  
-  try {
-    // Show warning for deep scrambles
-    if (!cubeState.isSolved) {
-      console.log('Solving... This may take 10-30 seconds for complex scrambles');
-    }
+    setIsSolving(true);
+    setSolution([]);
+    setStats(null);
     
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 sec timeout
+    const startTime = performance.now();
     
-    const response = await fetch('http://localhost:8080/cube/solve', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ maxDepth: 15 }), // Reduced from 20 to 15
-      signal: controller.signal
-    });
-    
-    clearTimeout(timeoutId);
-    
-    if (!response.ok) {
-      throw new Error('Solve request failed');
-    }
-    
-    const data = await response.json();
-    
-    if (data.solution && data.solution.length > 0) {
-      setSolution(data.solution);
-      setStats({
-        moves: data.moves || 0,
-        nodes: data.nodes || 0,
-        time: data.time || 0
+    try {
+      if (!cubeState.isSolved) {
+        console.log(`Solving with ${currentSolver}...`);
+      }
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120000);
+      
+      const response = await fetch('http://localhost:8080/cube/solve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxDepth: 15 }),
+        signal: controller.signal
       });
-      setCubeState(data.cube);
-    } else {
-      alert('No solution found within depth limit. Try scrambling with fewer moves.');
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error('Solve request failed');
+      }
+      
+      const data = await response.json();
+      const endTime = performance.now();
+      const clientTime = (endTime - startTime) / 1000;
+      
+      if (data.solution && data.solution.length > 0) {
+        setSolution(data.solution);
+        const newStats = {
+          moves: data.moves || 0,
+          nodes: data.nodes || 0,
+          time: data.time || 0,
+          solver: data.solver || currentSolver,
+          clientTime: clientTime
+        };
+        setStats(newStats);
+        setCubeState(data.cube);
+        
+        // Add to history for comparison
+        setSolverHistory(prev => [...prev, {
+          solver: data.solver,
+          scramble: scrambleMoves,
+          time: data.time,
+          moves: data.moves,
+          nodes: data.nodes,
+          timestamp: new Date().toLocaleTimeString()
+        }]);
+      } else {
+        alert('No solution found within depth limit. Try scrambling with fewer moves.');
+      }
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        alert('Solving timed out (120s). The cube is too scrambled.');
+      } else {
+        console.error('Solve failed:', err);
+        alert('Solve failed. Backend might be busy or cube is too complex.');
+      }
+    } finally {
+      setIsSolving(false);
     }
-  } catch (err) {
-    if (err.name === 'AbortError') {
-      alert('Solving timed out (60s). The cube is too scrambled. Try fewer scramble moves.');
-    } else {
-      console.error('Solve failed:', err);
-      alert('Solve failed. Backend might be busy or cube is too complex.');
-    }
-  } finally {
-    setIsSolving(false);
-  }
-};
+  };
 
   const handleReset = async () => {
     setSolution([]);
@@ -146,6 +201,10 @@ const App = () => {
     } catch (err) {
       console.error('Move failed:', err);
     }
+  };
+
+  const clearHistory = () => {
+    setSolverHistory([]);
   };
 
   const renderFace = (faceName, faceData) => {
@@ -193,7 +252,7 @@ const App = () => {
           <div className="flex items-center justify-between mb-8">
             <div>
               <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-                Rubik's Cube Solver
+                Rubik's Cube Solver - Parallel Computing
               </h1>
               <p className="text-sm text-gray-600 mt-2">
                 Backend: <span className={`font-bold ${
@@ -209,6 +268,33 @@ const App = () => {
                 <span className="text-green-700 font-bold text-lg">✓ SOLVED!</span>
               </div>
             )}
+          </div>
+
+          {/* Solver Selection */}
+          <div className="mb-6 bg-gradient-to-r from-blue-50 to-purple-50 rounded-xl p-4 border-2 border-blue-200">
+            <h3 className="font-bold text-gray-700 mb-3 flex items-center gap-2">
+              <Cpu size={20} />
+              Algorithm Selection
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+              {availableSolvers.map(solver => (
+                <button
+                  key={solver}
+                  onClick={() => handleSolverChange(solver)}
+                  disabled={isSolving || isScrambling}
+                  className={`px-4 py-3 rounded-lg font-bold text-sm transition ${
+                    currentSolver === solver
+                      ? 'bg-blue-600 text-white shadow-lg scale-105'
+                      : 'bg-white text-gray-700 hover:bg-blue-50 border-2 border-gray-300'
+                  } disabled:opacity-50 disabled:cursor-not-allowed`}
+                >
+                  <div>{solver.toUpperCase()}</div>
+                  <div className="text-xs font-normal mt-1 opacity-80">
+                    {SOLVER_DESCRIPTIONS[solver]?.split(' ').slice(0, 2).join(' ')}
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="grid lg:grid-cols-2 gap-8">
@@ -237,7 +323,7 @@ const App = () => {
                 <input
                   type="range"
                   min="3"
-                  max="15"
+                  max="12"
                   value={scrambleMoves}
                   onChange={(e) => setScrambleMoves(parseInt(e.target.value))}
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
@@ -245,11 +331,11 @@ const App = () => {
                 />
                 <div className="flex justify-between text-xs text-gray-500 mt-1">
                   <span>Easy (3)</span>
-                  <span>Medium (8)</span>
-                  <span>Hard (15)</span>
+                  <span>Medium (7)</span>
+                  <span>Hard (12)</span>
                 </div>
                 <p className="text-xs text-gray-600 mt-2">
-                  💡 Tip: Use 3-7 moves for instant solving, 8-12 for 5-30 seconds, 13-15 for 1-5 minutes
+                  💡 Recommended: 3-7 for testing parallel performance
                 </p>
               </div>
 
@@ -323,34 +409,83 @@ const App = () => {
                   </div>
                   
                   {stats && (
-                    <div className="grid grid-cols-3 gap-3 text-sm">
-                      <div className="bg-white p-3 rounded-lg text-center">
+                    <div className="grid grid-cols-2 gap-3 text-sm">
+                      <div className="bg-white p-3 rounded-lg">
+                        <div className="font-bold text-sm text-gray-600 mb-1">Algorithm</div>
+                        <div className="font-bold text-lg text-purple-600">{stats.solver}</div>
+                      </div>
+                      <div className="bg-white p-3 rounded-lg">
+                        <div className="font-bold text-sm text-gray-600 mb-1">Moves</div>
                         <div className="font-bold text-2xl text-green-600">{stats.moves}</div>
-                        <div className="text-gray-600">Moves</div>
                       </div>
-                      <div className="bg-white p-3 rounded-lg text-center">
-                        <div className="font-bold text-2xl text-blue-600">{stats.nodes}</div>
-                        <div className="text-gray-600">Nodes</div>
-                      </div>
-                      <div className="bg-white p-3 rounded-lg text-center">
-                        <div className="font-bold text-2xl text-purple-600">
-                          {stats.time.toFixed(2)}s
+                      <div className="bg-white p-3 rounded-lg">
+                        <div className="font-bold text-sm text-gray-600 mb-1">Time</div>
+                        <div className="font-bold text-2xl text-blue-600 flex items-center gap-1">
+                          <Clock size={20} />
+                          {stats.time.toFixed(3)}s
                         </div>
-                        <div className="text-gray-600">Time</div>
+                      </div>
+                      <div className="bg-white p-3 rounded-lg">
+                        <div className="font-bold text-sm text-gray-600 mb-1">Nodes</div>
+                        <div className="font-bold text-2xl text-orange-600">{stats.nodes}</div>
                       </div>
                     </div>
                   )}
                 </div>
               )}
 
+              {/* Performance History */}
+              {solverHistory.length > 0 && (
+                <div className="bg-white rounded-xl p-6 border-2 border-gray-200">
+                  <div className="flex justify-between items-center mb-3">
+                    <h3 className="font-bold text-gray-700">Performance History</h3>
+                    <button
+                      onClick={clearHistory}
+                      className="text-xs text-red-600 hover:text-red-800 font-bold"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {solverHistory.slice(-10).reverse().map((entry, idx) => (
+                      <div key={idx} className="bg-gray-50 p-3 rounded-lg text-sm">
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-purple-600">{entry.solver}</span>
+                          <span className="text-xs text-gray-500">{entry.timestamp}</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2 mt-2 text-xs">
+                          <div>
+                            <span className="text-gray-600">Scramble:</span> 
+                            <span className="font-bold ml-1">{entry.scramble}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-600">Time:</span> 
+                            <span className="font-bold ml-1">{entry.time.toFixed(2)}s</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-600">Moves:</span> 
+                            <span className="font-bold ml-1">{entry.moves}</span>
+                          </div>
+                          <div>
+                            <span className="text-gray-600">Nodes:</span> 
+                            <span className="font-bold ml-1">{entry.nodes}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Instructions */}
               <div className="bg-blue-50 rounded-xl p-6 border border-blue-200">
-                <h3 className="font-bold text-blue-900 mb-2">How to Use:</h3>
+                <h3 className="font-bold text-blue-900 mb-2">Parallel Computing Project:</h3>
                 <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
-                  <li>Click <strong>Scramble</strong> to randomize the cube</li>
-                  <li>Click <strong>Solve</strong> to let the AI solve it</li>
-                  <li>Or use <strong>Manual Moves</strong> to rotate faces yourself</li>
-                  <li>Watch the solution appear with statistics!</li>
+                  <li>Select an <strong>algorithm</strong> (Sequential, OpenMP, MPI, Hybrid)</li>
+                  <li>Click <strong>Scramble</strong> with desired difficulty</li>
+                  <li>Click <strong>Solve</strong> and compare metrics</li>
+                  <li>Check <strong>Performance History</strong> to compare algorithms</li>
+                  <li><strong>Key Metrics:</strong> Time (speedup), Nodes (work done)</li>
                 </ol>
               </div>
             </div>

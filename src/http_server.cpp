@@ -1,5 +1,16 @@
+// Updated src/http_server.cpp
 #include "http_server.hpp"
-#include "ida_star_solver.hpp"
+#include "sequential_solver.hpp"
+
+#ifdef HAVE_OPENMP
+#include "openmp_solver.hpp"
+#endif
+
+#ifdef HAVE_MPI
+#include "mpi_solver.hpp"
+#include "hybrid_solver.hpp"
+#endif
+
 #include <iostream>
 #include <sstream>
 #include <cstring>
@@ -9,13 +20,59 @@
 #include <arpa/inet.h>
 
 HTTPServer::HTTPServer(int port) 
-    : port_(port), serverSocket_(-1), running_(false) {
-    solver_ = std::make_unique<IDAStarSolver>();
+    : port_(port), serverSocket_(-1), running_(false), currentSolverType_("sequential") {
+    // Default to sequential solver
+    solver_ = std::make_unique<SequentialSolver>();
     currentCube_.reset();
 }
 
 HTTPServer::~HTTPServer() {
     stop();
+}
+
+void HTTPServer::setSolver(const std::string& solverType) {
+    solver_ = createSolver(solverType);
+    currentSolverType_ = solverType;
+}
+
+std::string HTTPServer::getCurrentSolver() const {
+    return currentSolverType_;
+}
+
+std::vector<std::string> HTTPServer::getAvailableSolvers() const {
+    std::vector<std::string> solvers = {"sequential"};
+    
+#ifdef HAVE_OPENMP
+    solvers.push_back("openmp");
+#endif
+    
+#ifdef HAVE_MPI
+    solvers.push_back("mpi");
+    solvers.push_back("hybrid");
+#endif
+    
+    return solvers;
+}
+
+std::unique_ptr<Solver> HTTPServer::createSolver(const std::string& type) {
+    if (type == "sequential") {
+        return std::make_unique<SequentialSolver>();
+    }
+#ifdef HAVE_OPENMP
+    else if (type == "openmp") {
+        return std::make_unique<OpenMPSolver>(4); // Default 4 threads
+    }
+#endif
+#ifdef HAVE_MPI
+    else if (type == "mpi") {
+            return std::make_unique<MPISolver>();
+    } else if (type == "hybrid") {
+            return std::make_unique<HybridSolver>(2); // Default 2 threads per process
+    }
+#endif
+    
+    // Default fallback
+    return std::make_unique<SequentialSolver>();
 }
 
 void HTTPServer::start() {
@@ -45,9 +102,12 @@ void HTTPServer::start() {
     
     running_ = true;
     std::cout << "Server started on port " << port_ << std::endl;
-    std::cout << "API Endpoints:" << std::endl;
+    std::cout << "Current solver: " << solver_->getName() << std::endl;
+    std::cout << "\nAPI Endpoints:" << std::endl;
     std::cout << "  GET  /status         - Server status" << std::endl;
     std::cout << "  GET  /cube           - Current cube state" << std::endl;
+    std::cout << "  GET  /solvers        - List available solvers" << std::endl;
+    std::cout << "  POST /solver/select  - Select solver algorithm" << std::endl;
     std::cout << "  POST /cube/reset     - Reset to solved state" << std::endl;
     std::cout << "  POST /cube/scramble  - Scramble the cube" << std::endl;
     std::cout << "  POST /cube/move      - Apply a move" << std::endl;
@@ -87,12 +147,10 @@ std::string HTTPServer::handleRequest(const std::string& request) {
     std::string method, path, version;
     stream >> method >> path >> version;
     
-    // Handle CORS preflight
     if (method == "OPTIONS") {
         return handleOPTIONS();
     }
     
-    // Extract body for POST requests
     std::string body;
     size_t bodyPos = request.find("\r\n\r\n");
     if (bodyPos != std::string::npos) {
@@ -113,6 +171,8 @@ std::string HTTPServer::handleGET(const std::string& path) {
         return getStatus();
     } else if (path == "/cube") {
         return getCubeState();
+    } else if (path == "/solvers") {
+        return listSolvers();
     }
     
     return createResponse(404, "{\"error\":\"Not found\"}");
@@ -129,6 +189,8 @@ std::string HTTPServer::handlePOST(const std::string& path, const std::string& b
         return solveCube(body);
     } else if (path == "/cube/state") {
         return setCubeState(body);
+    } else if (path == "/solver/select") {
+        return selectSolver(body);
     }
     
     return createResponse(404, "{\"error\":\"Not found\"}");
@@ -144,6 +206,41 @@ std::string HTTPServer::getStatus() {
     return createResponse(200, ss.str());
 }
 
+std::string HTTPServer::listSolvers() {
+    auto solvers = getAvailableSolvers();
+    std::stringstream ss;
+    ss << "{\"solvers\":[";
+    for (size_t i = 0; i < solvers.size(); ++i) {
+        ss << "\"" << solvers[i] << "\"";
+        if (i < solvers.size() - 1) ss << ",";
+    }
+    ss << "],\"current\":\"" << currentSolverType_ << "\"}";
+    return createResponse(200, ss.str());
+}
+
+std::string HTTPServer::selectSolver(const std::string& body) {
+    std::string solverType = extractJSONValue(body, "solver");
+    
+    if (solverType.empty()) {
+        return createResponse(400, "{\"error\":\"Solver type not specified\"}");
+    }
+    
+    auto available = getAvailableSolvers();
+    bool isAvailable = std::find(available.begin(), available.end(), solverType) != available.end();
+    
+    if (!isAvailable) {
+        std::stringstream ss;
+        ss << "{\"error\":\"Solver '" << solverType << "' not available\"}";
+        return createResponse(400, ss.str());
+    }
+    
+    setSolver(solverType);
+    
+    std::stringstream ss;
+    ss << "{\"success\":true,\"solver\":\"" << solver_->getName() << "\"}";
+    return createResponse(200, ss.str());
+}
+
 std::string HTTPServer::getCubeState() {
     return createResponse(200, currentCube_.toJSON());
 }
@@ -156,7 +253,6 @@ std::string HTTPServer::resetCube() {
 std::string HTTPServer::scrambleCube(const std::string& body) {
     int moves = 20;
     
-    // Parse moves count from body if provided
     std::string movesStr = extractJSONValue(body, "moves");
     if (!movesStr.empty()) {
         try {
@@ -206,6 +302,7 @@ std::string HTTPServer::solveCube(const std::string& body) {
     ss << "],\"moves\":" << solution.size();
     ss << ",\"nodes\":" << solver_->getNodesExplored();
     ss << ",\"time\":" << solver_->getSolveTime();
+    ss << ",\"solver\":\"" << solver_->getName() << "\"";
     ss << ",\"cube\":" << currentCube_.toJSON() << "}";
     
     return createResponse(200, ss.str());
@@ -228,7 +325,8 @@ std::string HTTPServer::setCubeState(const std::string& body) {
     }
 }
 
-std::string HTTPServer::createResponse(int status, const std::string& body, const std::string& contentType) {
+std::string HTTPServer::createResponse(int status, const std::string& body, 
+                                       const std::string& contentType) {
     std::stringstream ss;
     ss << "HTTP/1.1 " << status << " OK\r\n";
     ss << "Content-Type: " << contentType << "\r\n";
@@ -271,6 +369,5 @@ std::string HTTPServer::extractJSONValue(const std::string& json, const std::str
 
 std::map<std::string, std::string> HTTPServer::parseJSON(const std::string& json) {
     std::map<std::string, std::string> result;
-    // Simple JSON parser (implement as needed)
     return result;
 }

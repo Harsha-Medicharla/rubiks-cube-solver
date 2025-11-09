@@ -1,5 +1,5 @@
 #include "rubiks_cube.hpp"
-#include "ida_star_solver.hpp"
+#include "sequential_solver.hpp" 
 #include <iostream>
 #include <cassert>
 #include <vector>
@@ -15,14 +15,12 @@ void testCubeMoves() {
     std::cout << "Testing cube moves..." << std::endl;
     RubiksCube cube;
     
-    // Test single move and inverse
     cube.moveU();
     assert(!cube.isSolved());
     cube.moveUPrime();
     assert(cube.isSolved());
     std::cout << "  ✓ U and U' moves work correctly" << std::endl;
     
-    // Test all basic moves
     std::vector<std::string> moves = {"U", "D", "F", "B", "L", "R"};
     for (const auto& move : moves) {
         cube.applyMove(move);
@@ -32,7 +30,6 @@ void testCubeMoves() {
     }
     std::cout << "  ✓ All basic moves and inverses work" << std::endl;
     
-    // Test double moves
     cube.moveU();
     cube.moveU();
     RubiksCube cube2;
@@ -65,14 +62,12 @@ void testSolverOnEasyCase() {
     std::cout << "Testing solver on easy case..." << std::endl;
     RubiksCube cube;
     
-    // Apply a few moves
     cube.moveU();
     cube.moveR();
     
-    IDAStarSolver solver;
+    SequentialSolver solver;
     auto solution = solver.solve(cube, 10);
     
-    // Apply solution
     cube.applyMoves(solution);
     assert(cube.isSolved());
     std::cout << "  ✓ Solver found solution with " << solution.size() << " moves" << std::endl;
@@ -82,7 +77,7 @@ void testSolverOnSolvedCube() {
     std::cout << "Testing solver on already solved cube..." << std::endl;
     RubiksCube cube;
     
-    IDAStarSolver solver;
+    SequentialSolver solver; 
     auto solution = solver.solve(cube, 10);
     
     assert(solution.empty());
@@ -96,7 +91,6 @@ void testMoveSequence() {
     std::vector<std::string> moves = {"R", "U", "R'", "U'"};
     cube.applyMoves(moves);
     
-    // Apply inverse sequence
     for (int i = moves.size() - 1; i >= 0; --i) {
         cube.applyMove(cube.getInverseMove(moves[i]));
     }
@@ -142,13 +136,8 @@ int main() {
         std::cout << "All tests passed! ✓" << std::endl;
         std::cout << "========================================" << std::endl;
         return 0;
-    } catch (const std::exception& e) {
-        std::cerr << std::endl;
-        std::cerr << "Test failed with exception: " << e.what() << std::endl;
-        return 1;
     } catch (...) {
-        std::cerr << std::endl;
-        std::cerr << "Test failed with unknown exception" << std::endl;
+        std::cout << "\nTest failed\n";
         return 1;
     }
 }
