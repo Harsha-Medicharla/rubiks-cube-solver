@@ -1,425 +1,358 @@
 import React, { useState, useEffect } from 'react';
-import { Shuffle, RotateCw, Play, Download, Code, Zap } from 'lucide-react';
+import { Shuffle, RotateCw, Play, Zap } from 'lucide-react';
+import { cubeAPI } from './api';
 
 const App = () => {
   const [cubeState, setCubeState] = useState(null);
-  const [solution, setSolution] = useState('');
-  const [isShuffled, setIsShuffled] = useState(false);
+  const [solution, setSolution] = useState([]);
   const [isSolving, setIsSolving] = useState(false);
-  const [moveHistory, setMoveHistory] = useState([]);
-  const [algorithmType, setAlgorithmType] = useState('sequential');
-  const [showCode, setShowCode] = useState(false);
+  const [isScrambling, setIsScrambling] = useState(false);
+  const [serverStatus, setServerStatus] = useState('checking...');
+  const [stats, setStats] = useState(null);
+  const [scrambleMoves, setScrambleMoves] = useState(7);
 
-  const FACE_COLORS = {
-    0: { name: 'Front', color: 'bg-red-500', initial: 'R' },
-    1: { name: 'Back', color: 'bg-orange-500', initial: 'O' },
-    2: { name: 'Right', color: 'bg-yellow-500', initial: 'Y' },
-    3: { name: 'Left', color: 'bg-green-500', initial: 'G' },
-    4: { name: 'Top', color: 'bg-blue-500', initial: 'B' },
-    5: { name: 'Bottom', color: 'bg-white', initial: 'W' }
+
+  // Color mapping from backend to display
+  const COLOR_MAP = {
+    'W': 'bg-white border-gray-300',
+    'Y': 'bg-yellow-400',
+    'G': 'bg-green-500',
+    'B': 'bg-blue-500',
+    'R': 'bg-red-500',
+    'O': 'bg-orange-500'
   };
 
-  const initializeCube = () => {
-    const cube = Array(6).fill(null).map((_, faceIdx) =>
-      Array(3).fill(null).map(() =>
-        Array(3).fill(FACE_COLORS[faceIdx].initial)
-      )
-    );
-    setCubeState(cube);
+  const FACE_NAMES = {
+    'U': 'Up (White)',
+    'D': 'Down (Yellow)',
+    'F': 'Front (Green)',
+    'B': 'Back (Blue)',
+    'L': 'Left (Orange)',
+    'R': 'Right (Red)'
   };
 
+  // Check backend connection on mount
   useEffect(() => {
-    initializeCube();
+    checkBackend();
+    loadCube();
   }, []);
 
-  const shuffleCube = () => {
-    if (!cubeState) return;
-    
-    const moves = Math.floor(Math.random() * 2) + 1;
-    let newCube = JSON.parse(JSON.stringify(cubeState));
-    const history = [];
-
-    for (let i = 0; i < moves; i++) {
-      const moveType = Math.floor(Math.random() * 3);
-      const index = Math.floor(Math.random() * 3);
-      const direction = Math.floor(Math.random() * 2);
-
-      let moveDesc = '';
-      if (moveType === 0) {
-        newCube = applyHorizontalTwist(newCube, index, direction);
-        moveDesc = `Horizontal row ${index}, ${direction ? 'CW' : 'CCW'}`;
-      } else if (moveType === 1) {
-        newCube = applyVerticalTwist(newCube, index, direction);
-        moveDesc = `Vertical col ${index}, ${direction ? 'CW' : 'CCW'}`;
+  const checkBackend = async () => {
+    try {
+      const response = await fetch('http://localhost:8080/status');
+      if (response.ok) {
+        setServerStatus('connected');
       } else {
-        const face = Math.floor(Math.random() * 6);
-        newCube = applySideTwist(newCube, face, direction);
-        moveDesc = `Face ${FACE_COLORS[face].name}, ${direction ? 'CW' : 'CCW'}`;
+        setServerStatus('error');
       }
-      history.push(moveDesc);
+    } catch (err) {
+      setServerStatus('disconnected');
     }
-
-    setCubeState(newCube);
-    setMoveHistory(history);
-    setIsShuffled(true);
-    setSolution('');
   };
 
-  const applyHorizontalTwist = (cube, row, dir) => {
-    const newCube = JSON.parse(JSON.stringify(cube));
-    const temp = [...newCube[0][row]];
-    
-    if (dir === 0) {
-      newCube[0][row] = [...newCube[3][row]];
-      newCube[3][row] = [...newCube[1][row]].reverse();
-      newCube[1][row] = [...newCube[2][row]].reverse();
-      newCube[2][row] = [...temp];
-    } else {
-      newCube[0][row] = [...newCube[2][row]];
-      newCube[2][row] = [...newCube[1][row]].reverse();
-      newCube[1][row] = [...newCube[3][row]].reverse();
-      newCube[3][row] = [...temp];
+  const loadCube = async () => {
+    try {
+      const data = await cubeAPI.getCube();
+      setCubeState(data);
+    } catch (err) {
+      console.error('Failed to load cube:', err);
     }
-
-    if (row === 0) {
-      newCube[4] = rotateFace(newCube[4], dir !== 0);
-    } else if (row === 2) {
-      newCube[5] = rotateFace(newCube[5], dir === 0);
-    }
-
-    return newCube;
   };
 
-  const applyVerticalTwist = (cube, col, dir) => {
-    const newCube = JSON.parse(JSON.stringify(cube));
-    const temp = newCube.map(face => face[col] ? face[col][col] : null);
-    
-    if (dir === 0) {
-      for (let i = 0; i < 3; i++) {
-        const t = newCube[4][i][col];
-        newCube[4][i][col] = newCube[0][i][col];
-        newCube[0][i][col] = newCube[5][2-i][col];
-        newCube[5][2-i][col] = newCube[1][i][2-col];
-        newCube[1][i][2-col] = t;
-      }
-    } else {
-      for (let i = 0; i < 3; i++) {
-        const t = newCube[4][i][col];
-        newCube[4][i][col] = newCube[1][i][2-col];
-        newCube[1][i][2-col] = newCube[5][2-i][col];
-        newCube[5][2-i][col] = newCube[0][i][col];
-        newCube[0][i][col] = t;
-      }
-    }
+  const handleScramble = async () => {
+  setIsScrambling(true);
+  setSolution([]);
+  setStats(null);
+  try {
+    const data = await cubeAPI.scramble(scrambleMoves); // Use slider value
+    setCubeState(data);
+  } catch (err) {
+    console.error('Scramble failed:', err);
+    alert('Backend not responding. Make sure the C++ server is running!');
+  } finally {
+    setIsScrambling(false);
+  }
+};
 
-    if (col === 0) {
-      newCube[3] = rotateFace(newCube[3], dir !== 0);
-    } else if (col === 2) {
-      newCube[2] = rotateFace(newCube[2], dir === 0);
-    }
-
-    return newCube;
-  };
-
-  const applySideTwist = (cube, face, dir) => {
-    let newCube = JSON.parse(JSON.stringify(cube));
-    
-    if (face < 2) {
-      newCube[face] = rotateFace(newCube[face], dir === 0);
-    } else if (face === 2) {
-      newCube = applyVerticalTwist(newCube, 2, dir);
-    } else if (face === 3) {
-      newCube = applyVerticalTwist(newCube, 0, dir);
-    } else if (face === 4) {
-      newCube = applyHorizontalTwist(newCube, 0, dir);
-    } else if (face === 5) {
-      newCube = applyHorizontalTwist(newCube, 2, dir);
+  const handleSolve = async () => {
+  setIsSolving(true);
+  setSolution([]);
+  setStats(null);
+  
+  try {
+    // Show warning for deep scrambles
+    if (!cubeState.isSolved) {
+      console.log('Solving... This may take 10-30 seconds for complex scrambles');
     }
     
-    return newCube;
-  };
-
-  const rotateFace = (face, clockwise) => {
-    const n = 3;
-    const newFace = Array(n).fill(null).map(() => Array(n).fill(''));
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 sec timeout
     
-    for (let i = 0; i < n; i++) {
-      for (let j = 0; j < n; j++) {
-        if (clockwise) {
-          newFace[j][n-1-i] = face[i][j];
-        } else {
-          newFace[n-1-j][i] = face[i][j];
-        }
-      }
-    }
-    
-    return newFace;
-  };
-
-  const checkSolved = (cube) => {
-    return cube.every(face => {
-      const firstColor = face[0][0];
-      return face.every(row => row.every(cell => cell === firstColor));
+    const response = await fetch('http://localhost:8080/cube/solve', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ maxDepth: 15 }), // Reduced from 20 to 15
+      signal: controller.signal
     });
-  };
-
-  const solveCube = () => {
-    if (!cubeState || !isShuffled) return;
     
-    setIsSolving(true);
+    clearTimeout(timeoutId);
     
-    setTimeout(() => {
-      const reversedMoves = [...moveHistory].reverse().map(move => {
-        if (move.includes('CW')) {
-          return move.replace('CW', 'CCW');
-        } else {
-          return move.replace('CCW', 'CW');
-        }
-      });
-      
-      setSolution(reversedMoves.join(' → '));
-      
-      let newCube = JSON.parse(JSON.stringify(cubeState));
-      reversedMoves.forEach(move => {
-        const parts = move.split(',');
-        const direction = parts[1].includes('CW') ? 1 : 0;
-        
-        if (move.includes('Horizontal')) {
-          const row = parseInt(move.match(/row (\d)/)[1]);
-          newCube = applyHorizontalTwist(newCube, row, direction);
-        } else if (move.includes('Vertical')) {
-          const col = parseInt(move.match(/col (\d)/)[1]);
-          newCube = applyVerticalTwist(newCube, col, direction);
-        } else if (move.includes('Face')) {
-          const faceName = move.match(/Face (\w+)/)[1];
-          const faceIdx = Object.keys(FACE_COLORS).find(
-            key => FACE_COLORS[key].name === faceName
-          );
-          newCube = applySideTwist(newCube, parseInt(faceIdx), direction);
-        }
-      });
-      
-      setCubeState(newCube);
-      setIsSolving(false);
-      setIsShuffled(false);
-    }, 500);
-  };
-
-  const reset = () => {
-    initializeCube();
-    setIsShuffled(false);
-    setSolution('');
-    setMoveHistory([]);
-  };
-
-  const exportCode = () => {
-    const code = `// Refactored Rubik's Cube Solver
-// Algorithm: ${algorithmType}
-// State: ${cubeState ? 'Initialized' : 'Not initialized'}
-// Moves: ${moveHistory.length}
-
-class CubeSolver {
-  constructor(dimension = 3) {
-    this.size = dimension;
-    this.initializeState();
-  }
-  
-  initializeState() {
-    this.faces = Array(6).fill(null).map((_, idx) =>
-      Array(this.size).fill(null).map(() =>
-        Array(this.size).fill(this.getColorCode(idx))
-      )
-    );
-  }
-  
-  getColorCode(faceIndex) {
-    const colors = ['R', 'O', 'Y', 'G', 'B', 'W'];
-    return colors[faceIndex];
-  }
-  
-  performMove(moveType, index, clockwise) {
-    switch(moveType) {
-      case 'horizontal': return this.rotateHorizontal(index, clockwise);
-      case 'vertical': return this.rotateVertical(index, clockwise);
-      case 'face': return this.rotateFace(index, clockwise);
+    if (!response.ok) {
+      throw new Error('Solve request failed');
     }
+    
+    const data = await response.json();
+    
+    if (data.solution && data.solution.length > 0) {
+      setSolution(data.solution);
+      setStats({
+        moves: data.moves || 0,
+        nodes: data.nodes || 0,
+        time: data.time || 0
+      });
+      setCubeState(data.cube);
+    } else {
+      alert('No solution found within depth limit. Try scrambling with fewer moves.');
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      alert('Solving timed out (60s). The cube is too scrambled. Try fewer scramble moves.');
+    } else {
+      console.error('Solve failed:', err);
+      alert('Solve failed. Backend might be busy or cube is too complex.');
+    }
+  } finally {
+    setIsSolving(false);
   }
-  
-  isSolved() {
-    return this.faces.every(face => 
-      face.flat().every(cell => cell === face[0][0])
-    );
-  }
-}
+};
 
-// Export configuration
-module.exports = { CubeSolver };`;
-
-    const blob = new Blob([code], { type: 'text/javascript' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'rubiks-cube-solver.js';
-    a.click();
+  const handleReset = async () => {
+    setSolution([]);
+    setStats(null);
+    try {
+      const data = await fetch('http://localhost:8080/cube/reset', {
+        method: 'POST'
+      }).then(r => r.json());
+      setCubeState(data);
+    } catch (err) {
+      console.error('Reset failed:', err);
+    }
   };
 
-  const renderFace = (faceIdx) => {
-    if (!cubeState) return null;
-    
+  const handleMove = async (move) => {
+    try {
+      const data = await cubeAPI.applyMove(move);
+      setCubeState(data);
+    } catch (err) {
+      console.error('Move failed:', err);
+    }
+  };
+
+  const renderFace = (faceName, faceData) => {
+    if (!faceData) return null;
+
     return (
       <div className="inline-block m-2">
-        <div className="text-xs font-semibold mb-1 text-center text-gray-600">
-          {FACE_COLORS[faceIdx].name}
+        <div className="text-xs font-bold mb-1 text-center text-gray-700">
+          {FACE_NAMES[faceName]}
         </div>
-        <div className="grid grid-cols-3 gap-0.5 border-2 border-gray-800 p-1 bg-gray-800 rounded">
-          {cubeState[faceIdx].map((row, i) =>
-            row.map((cell, j) => {
-              const colorClass = Object.values(FACE_COLORS).find(
-                fc => fc.initial === cell
-              )?.color || 'bg-gray-300';
-              
-              return (
-                <div
-                  key={`${i}-${j}`}
-                  className={`w-8 h-8 ${colorClass} border border-gray-700 rounded-sm shadow-inner`}
-                />
-              );
-            })
-          )}
+        <div className="grid grid-cols-3 gap-1 border-4 border-gray-800 p-1 bg-gray-800 rounded-lg shadow-xl">
+          {faceData.map((color, idx) => (
+            <div
+              key={idx}
+              className={`w-10 h-10 ${COLOR_MAP[color] || 'bg-gray-300'} 
+                border-2 border-gray-600 rounded shadow-md 
+                flex items-center justify-center text-xs font-bold text-gray-700`}
+            >
+              {color}
+            </div>
+          ))}
         </div>
       </div>
     );
   };
 
+  const availableMoves = ['U', "U'", 'U2', 'D', "D'", 'D2', 
+                          'F', "F'", 'F2', 'B', "B'", 'B2',
+                          'L', "L'", 'L2', 'R', "R'", 'R2'];
+
+  if (!cubeState) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
+        <div className="text-2xl font-bold text-gray-600">Loading cube...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 p-8">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-7xl mx-auto">
         <div className="bg-white rounded-2xl shadow-2xl p-8">
+          
+          {/* Header */}
           <div className="flex items-center justify-between mb-8">
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
-              Rubik's Cube Solver
-            </h1>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setShowCode(!showCode)}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-              >
-                <Code size={18} />
-                <span className="text-sm">Code</span>
-              </button>
-              <button
-                onClick={exportCode}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition"
-              >
-                <Download size={18} />
-                <span className="text-sm">Export</span>
-              </button>
+            <div>
+              <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
+                Rubik's Cube Solver
+              </h1>
+              <p className="text-sm text-gray-600 mt-2">
+                Backend: <span className={`font-bold ${
+                  serverStatus === 'connected' ? 'text-green-600' : 'text-red-600'
+                }`}>
+                  {serverStatus === 'connected' ? '● Connected' : '● Disconnected'}
+                </span>
+              </p>
             </div>
+            
+            {cubeState.isSolved && (
+              <div className="px-6 py-3 bg-green-100 border-2 border-green-500 rounded-xl">
+                <span className="text-green-700 font-bold text-lg">✓ SOLVED!</span>
+              </div>
+            )}
           </div>
 
-          <div className="grid md:grid-cols-2 gap-8">
+          <div className="grid lg:grid-cols-2 gap-8">
+            
+            {/* Left: Cube Visualization */}
             <div>
               <div className="bg-gray-50 rounded-xl p-6">
-                <h2 className="text-xl font-semibold mb-4 text-gray-700">Cube Visualization</h2>
-                <div className="flex flex-col items-center">
-                  <div>{renderFace(4)}</div>
-                  <div className="flex">
-                    {renderFace(3)}
-                    {renderFace(0)}
-                    {renderFace(2)}
+                <h2 className="text-xl font-bold mb-4 text-gray-700">Cube State</h2>
+                <div className="flex flex-col items-center space-y-2">
+                  <div>{renderFace('U', cubeState.faces?.U)}</div>
+                  <div className="flex space-x-2">
+                    {renderFace('L', cubeState.faces?.L)}
+                    {renderFace('F', cubeState.faces?.F)}
+                    {renderFace('R', cubeState.faces?.R)}
                   </div>
-                  <div>{renderFace(5)}</div>
-                  <div>{renderFace(1)}</div>
+                  <div>{renderFace('D', cubeState.faces?.D)}</div>
+                  <div>{renderFace('B', cubeState.faces?.B)}</div>
                 </div>
-                
-                {checkSolved(cubeState || []) && !isShuffled && (
-                  <div className="mt-4 p-3 bg-green-100 border border-green-300 rounded-lg text-center">
-                    <span className="text-green-700 font-semibold">✓ Cube is solved!</span>
-                  </div>
-                )}
               </div>
 
-              <div className="mt-4 flex gap-3">
+              <div className="mt-4 bg-white p-4 rounded-lg border-2 border-gray-200">
+                <label className="flex items-center justify-between mb-2">
+                  <span className="font-bold text-gray-700">Scramble Difficulty:</span>
+                  <span className="text-blue-600 font-bold text-lg">{scrambleMoves} moves</span>
+                </label>
+                <input
+                  type="range"
+                  min="3"
+                  max="15"
+                  value={scrambleMoves}
+                  onChange={(e) => setScrambleMoves(parseInt(e.target.value))}
+                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+                  disabled={isSolving || isScrambling}
+                />
+                <div className="flex justify-between text-xs text-gray-500 mt-1">
+                  <span>Easy (3)</span>
+                  <span>Medium (8)</span>
+                  <span>Hard (15)</span>
+                </div>
+                <p className="text-xs text-gray-600 mt-2">
+                  💡 Tip: Use 3-7 moves for instant solving, 8-12 for 5-30 seconds, 13-15 for 1-5 minutes
+                </p>
+              </div>
+
+              {/* Control Buttons */}
+              <div className="mt-6 flex gap-3">
                 <button
-                  onClick={shuffleCube}
-                  disabled={isSolving}
-                  className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-lg hover:from-purple-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg"
+                  onClick={handleScramble}
+                  disabled={isScrambling || isSolving}
+                  className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-gradient-to-r from-purple-500 to-purple-600 text-white rounded-xl hover:from-purple-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg font-bold text-lg"
                 >
-                  <Shuffle size={20} />
-                  Shuffle
+                  {isScrambling ? <Zap size={24} className="animate-spin" /> : <Shuffle size={24} />}
+                  {isScrambling ? 'Scrambling...' : 'Scramble'}
                 </button>
                 
                 <button
-                  onClick={solveCube}
-                  disabled={!isShuffled || isSolving}
-                  className="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg"
+                  onClick={handleSolve}
+                  disabled={cubeState.isSolved || isSolving || isScrambling}
+                  className="flex-1 flex items-center justify-center gap-2 px-6 py-4 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:from-blue-600 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition shadow-lg font-bold text-lg"
                 >
-                  {isSolving ? <Zap size={20} className="animate-pulse" /> : <Play size={20} />}
+                  {isSolving ? <Zap size={24} className="animate-pulse" /> : <Play size={24} />}
                   {isSolving ? 'Solving...' : 'Solve'}
                 </button>
                 
                 <button
-                  onClick={reset}
-                  className="px-6 py-3 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition shadow-lg"
+                  onClick={handleReset}
+                  disabled={isSolving || isScrambling}
+                  className="px-6 py-4 bg-gray-500 text-white rounded-xl hover:bg-gray-600 transition shadow-lg disabled:opacity-50"
                 >
-                  <RotateCw size={20} />
+                  <RotateCw size={24} />
                 </button>
               </div>
             </div>
 
+            {/* Right: Controls & Info */}
             <div className="space-y-6">
+              
+              {/* Manual Moves */}
               <div className="bg-gray-50 rounded-xl p-6">
-                <h2 className="text-xl font-semibold mb-4 text-gray-700">Algorithm Selection</h2>
-                <select
-                  value={algorithmType}
-                  onChange={(e) => setAlgorithmType(e.target.value)}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                >
-                  <option value="sequential">Sequential Search</option>
-                  <option value="parallel-openmp">OpenMP Parallel</option>
-                  <option value="parallel-mpi">MPI Distributed</option>
-                  <option value="hybrid">Hybrid MPI + OpenMP</option>
-                </select>
+                <h2 className="text-xl font-bold mb-4 text-gray-700">Manual Moves</h2>
+                <div className="grid grid-cols-6 gap-2">
+                  {availableMoves.map(move => (
+                    <button
+                      key={move}
+                      onClick={() => handleMove(move)}
+                      disabled={isSolving || isScrambling}
+                      className="px-3 py-2 bg-white border-2 border-gray-300 rounded-lg hover:bg-blue-50 hover:border-blue-400 disabled:opacity-50 transition font-mono font-bold text-sm"
+                    >
+                      {move}
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="bg-gray-50 rounded-xl p-6">
-                <h2 className="text-xl font-semibold mb-4 text-gray-700">Move History</h2>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {moveHistory.length > 0 ? (
-                    moveHistory.map((move, idx) => (
-                      <div key={idx} className="flex items-center gap-2 p-2 bg-white rounded border border-gray-200">
-                        <span className="text-xs font-mono text-gray-500">#{idx + 1}</span>
-                        <span className="text-sm text-gray-700">{move}</span>
+              {/* Solution Display */}
+              {solution.length > 0 && (
+                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-6 border-2 border-green-300">
+                  <h2 className="text-xl font-bold mb-3 text-green-800">
+                    Solution Found! 🎉
+                  </h2>
+                  <div className="bg-white p-4 rounded-lg mb-3">
+                    <div className="flex flex-wrap gap-2">
+                      {solution.map((move, idx) => (
+                        <span
+                          key={idx}
+                          className="px-3 py-1 bg-green-100 border border-green-300 rounded font-mono font-bold text-sm"
+                        >
+                          {move}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {stats && (
+                    <div className="grid grid-cols-3 gap-3 text-sm">
+                      <div className="bg-white p-3 rounded-lg text-center">
+                        <div className="font-bold text-2xl text-green-600">{stats.moves}</div>
+                        <div className="text-gray-600">Moves</div>
                       </div>
-                    ))
-                  ) : (
-                    <p className="text-gray-400 text-sm italic">No moves yet. Shuffle the cube to start.</p>
+                      <div className="bg-white p-3 rounded-lg text-center">
+                        <div className="font-bold text-2xl text-blue-600">{stats.nodes}</div>
+                        <div className="text-gray-600">Nodes</div>
+                      </div>
+                      <div className="bg-white p-3 rounded-lg text-center">
+                        <div className="font-bold text-2xl text-purple-600">
+                          {stats.time.toFixed(2)}s
+                        </div>
+                        <div className="text-gray-600">Time</div>
+                      </div>
+                    </div>
                   )}
                 </div>
+              )}
+
+              {/* Instructions */}
+              <div className="bg-blue-50 rounded-xl p-6 border border-blue-200">
+                <h3 className="font-bold text-blue-900 mb-2">How to Use:</h3>
+                <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
+                  <li>Click <strong>Scramble</strong> to randomize the cube</li>
+                  <li>Click <strong>Solve</strong> to let the AI solve it</li>
+                  <li>Or use <strong>Manual Moves</strong> to rotate faces yourself</li>
+                  <li>Watch the solution appear with statistics!</li>
+                </ol>
               </div>
-
-              {solution && (
-                <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-6 border-2 border-green-200">
-                  <h2 className="text-xl font-semibold mb-3 text-green-800">Solution Path</h2>
-                  <div className="text-sm text-gray-700 bg-white p-4 rounded-lg font-mono overflow-x-auto">
-                    {solution}
-                  </div>
-                </div>
-              )}
-
-              {showCode && (
-                <div className="bg-gray-900 rounded-xl p-6 text-white">
-                  <h2 className="text-xl font-semibold mb-3">Code Preview</h2>
-                  <pre className="text-xs overflow-x-auto">
-                    <code>{`// Solver Implementation
-const solver = {
-  algorithm: '${algorithmType}',
-  maxDepth: 13,
-  moves: ${moveHistory.length}
-};`}</code>
-                  </pre>
-                </div>
-              )}
             </div>
           </div>
         </div>
